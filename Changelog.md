@@ -1,10 +1,33 @@
 Lilu Changelog
 ==============
 
+#### v1.1.7
+- Merged advanced disassembly API (thx Pb and others)
+- Added HDE disassembler for quick instruction decoding (by Vyacheslav Patkov)
+- Updated capstone to 3.0.5 rc3
+- Fixed load API lock type preventing dynamic memory allocation (thx Pb)
+- Added setInterrupts API
+- Added an option to define custom plugin entry points
+
+#### v1.1.6
+- Ignored disabled kexts earlier for speed reasons
+- Added High Sierra to the list of compatible OS
+- Added arrsize API
+- Made patch count warning only show in debug mode
+- Made kinfo not found logging only show in debug mode
+- Added routeBlock API for opcode-based routing
+- Centralised user and kernel patcher start time
+- Added c-compliant kern_os_cfree implementation
+- Added a workaround for page fault kernel panics
+- Added a workaround for xnu printf limitations
+
 #### v1.1.5
 - Increased executable memory buffer to page size
 - Added auth-root-dmg support High Sierra installer detection (thx Piker-Alpha)
 - Added -liluforce to force enable Lilu in safe mode and recovery
+- Added preliminary Xcode 9 compatibility
+- Added support for unloadable kexts
+- Merged official capstone patches up to c508224
 
 #### v1.1.4
 - Slightly improved userspace patcher speed for 10.12

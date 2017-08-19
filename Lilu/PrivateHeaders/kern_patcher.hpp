@@ -42,7 +42,7 @@ namespace Patch {
 
 	template <typename T>
 	static void writeType(mach_vm_address_t addr, T value) {
-		DBGLOG("private @ writing to %X value of %zu which is %X", (unsigned int)addr, sizeof(T), (unsigned int)value);
+		DBGLOG("private @ writing to %X value of %lu which is %X", (unsigned int)addr, sizeof(T), (unsigned int)value);
 		*reinterpret_cast<T *>(addr) = value;
 	}
 
@@ -115,7 +115,7 @@ namespace Patch {
 	}
 }
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 
 /**
  *  Taken from libkern/libkern/OSKextLibPrivate.h
@@ -139,6 +139,6 @@ struct OSKextLoadedKextSummaryHeader {
 	OSKextLoadedKextSummary summaries[0];
 };
 
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 
 #endif /* kern_patcher_private_h */

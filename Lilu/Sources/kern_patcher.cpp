@@ -11,10 +11,10 @@
 
 #include <mach/mach_types.h>
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 static KernelPatcher *that {nullptr};
 static SInt32 updateSummariesEntryCount;
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 
 KernelPatcher::Error KernelPatcher::getError() {
 	return code;
@@ -28,7 +28,7 @@ void KernelPatcher::init() {
 	size_t id = loadKinfo("kernel", reinterpret_cast<const char **>(&kernelPaths), kernelPathsNum, true);
 	
 	if (getError() != Error::NoError || id != KernelID) {
-		DBGLOG("patcher @ got %d error and %zu kernel id", getError(), id);
+		DBGLOG("patcher @ got %d error and %lu kernel id", getError(), id);
 		return;
 	}
 	
@@ -40,9 +40,6 @@ void KernelPatcher::init() {
 }
 
 void KernelPatcher::deinit() {
-	// Deinitialise disassembler
-	disasm.deinit();
-	
 	// Remove the patches
 	if (kinfos.size() > 0) {
 		if (kinfos[KernelID]->setKernelWriting(true) == KERN_SUCCESS) {
@@ -66,7 +63,7 @@ void KernelPatcher::deinit() {
 size_t KernelPatcher::loadKinfo(const char *id, const char * const paths[], size_t num, bool isKernel) {
 	for (size_t i = 0; i < kinfos.size(); i++) {
 		if (kinfos[i]->objectId && !strcmp(kinfos[i]->objectId, id)) {
-			DBGLOG("patcher @ found an already loaded MachInfo for %s at %zu", id, i);
+			DBGLOG("patcher @ found an already loaded MachInfo for %s at %lu", id, i);
 			code = Error::AlreadyDone;
 			return i;
 		}
@@ -77,7 +74,7 @@ size_t KernelPatcher::loadKinfo(const char *id, const char * const paths[], size
 		SYSLOG("patcher @ failed to allocate MachInfo for %s", id);
 		code = Error::MemoryIssue;
 	} else if (info->init(paths, num) != KERN_SUCCESS) {
-		if ((isKernel && ADDPR(debugEnabled)) || !isKernel)
+		if (ADDPR(debugEnabled))
 			SYSLOG("patcher @ failed to init MachInfo for %s", id);
 		code = Error::NoKinfoFound;
 	} else if (!kinfos.push_back(info)) {
@@ -95,7 +92,7 @@ size_t KernelPatcher::loadKinfo(const char *id, const char * const paths[], size
 	return INVALID;
 }
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 size_t KernelPatcher::loadKinfo(KernelPatcher::KextInfo *info) {
 	if (!info) {
 		SYSLOG("patcher @ loadKinfo got a null info");
@@ -104,27 +101,27 @@ size_t KernelPatcher::loadKinfo(KernelPatcher::KextInfo *info) {
 	}
 
 	if (info->loadIndex != KernelPatcher::KextInfo::Unloaded) {
-		DBGLOG("patcher @ provided KextInfo (%s) has already been loaded at %zu index", info->id, info->loadIndex);
+		DBGLOG("patcher @ provided KextInfo (%s) has already been loaded at %lu index", info->id, info->loadIndex);
 		return info->loadIndex;
 	}
 	
 	auto idx = loadKinfo(info->id, info->paths, info->pathNum);
 	if (getError() == Error::NoError || getError() == Error::AlreadyDone) {
 		info->loadIndex = idx;
-		DBGLOG("patcher @ loaded kinfo %s at %zu index", info->id, idx);
+		DBGLOG("patcher @ loaded kinfo %s at %lu index", info->id, idx);
 	}
 	
 	return idx;
 }
 #endif /* KEXTPATH_SUPPORT */
 
-void KernelPatcher::updateRunningInfo(size_t id, mach_vm_address_t slide, size_t size) {
+void KernelPatcher::updateRunningInfo(size_t id, mach_vm_address_t slide, size_t size, bool force) {
 	if (id >= kinfos.size()) {
-		SYSLOG("patcher @ invalid kinfo id %zu for running info update", id);
+		SYSLOG("patcher @ invalid kinfo id %lu for running info update", id);
 		return;
 	}
 	
-	if (kinfos[id]->getRunningAddresses(slide, size) != KERN_SUCCESS) {
+	if (kinfos[id]->getRunningAddresses(slide, size, force) != KERN_SUCCESS) {
 		SYSLOG("patcher @ failed to retrieve running info");
 		code = Error::KernRunningInitFailure;
 	}
@@ -142,14 +139,14 @@ mach_vm_address_t KernelPatcher::solveSymbol(size_t id, const char *symbol) {
 			return addr;
 		}
 	} else {
-		SYSLOG("patcher @ invalid kinfo id %zu for %s symbol lookup", id, symbol);
+		SYSLOG("patcher @ invalid kinfo id %lu for %s symbol lookup", id, symbol);
 	}
 
 	code = Error::NoSymbolFound;
 	return 0;
 }
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 void KernelPatcher::setupKextListening() {
 	// We have already done this
 	if (that) return;
@@ -206,6 +203,16 @@ void KernelPatcher::waitOnKext(KextHandler *handler) {
 	}
 }
 
+void KernelPatcher::updateKextHandlerFeatures(KextInfo *info) {
+	for (size_t i = 0; i < khandlers.size(); i++) {
+		if (!strcmp(khandlers[i]->id, info->id)) {
+			khandlers[i]->loaded |= info->loaded;
+			khandlers[i]->reloadable |= info->reloadable;
+			break;
+		}
+	}
+}
+
 void KernelPatcher::applyLookupPatch(const LookupPatch *patch) {
 	if (!patch || !patch->kext || patch->kext->loadIndex == KextInfo::Unloaded) {
 		SYSLOG("patcher @ an invalid lookup patch provided");
@@ -233,9 +240,8 @@ void KernelPatcher::applyLookupPatch(const LookupPatch *patch) {
 			curr++;
 		
 		if (curr != off) {
-			for (size_t j = 0; j < patch->size; j++) {
+			for (size_t j = 0; j < patch->size; j++)
 				curr[j] = patch->replace[j];
-			}
 			changes++;
 		}
 	}
@@ -247,11 +253,16 @@ void KernelPatcher::applyLookupPatch(const LookupPatch *patch) {
 	}
 	
 	if (changes != patch->count) {
-		SYSLOG("patcher @ lookup patching applied only %zu patches out of %zu", changes, patch->count);
+		if (ADDPR(debugEnabled))
+			SYSLOG("patcher @ lookup patching applied only %lu patches out of %lu", changes, patch->count);
 		code = Error::MemoryIssue;
 	}
 }
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
+
+void KernelPatcher::activate() {
+	activated = true;
+}
 
 mach_vm_address_t KernelPatcher::routeFunction(mach_vm_address_t from, mach_vm_address_t to, bool buildWrapper, bool kernelRoute) {
 	mach_vm_address_t diff = (to - (from + SmallJump));
@@ -321,37 +332,73 @@ mach_vm_address_t KernelPatcher::routeFunction(mach_vm_address_t from, mach_vm_a
 	return trampoline;
 }
 
+mach_vm_address_t KernelPatcher::routeBlock(mach_vm_address_t from, const uint8_t *opcodes, size_t opnum, bool buildWrapper, bool kernelRoute) {
+	// Simply overwrite the function in the easiest case
+	if (!buildWrapper) {
+		if (!kernelRoute || kinfos[KernelID]->setKernelWriting(true) == KERN_SUCCESS) {
+			memcpy(reinterpret_cast<void *>(from), opcodes, opnum);
+			if (kernelRoute)
+				kinfos[KernelID]->setKernelWriting(false);
+		} else {
+			SYSLOG("patcher @ block overwrite failed to change protection");
+			code = Error::MemoryProtection;
+			return EINVAL;
+		}
+		
+		return 0;
+	} else if (!kernelRoute) {
+		SYSLOG("patcher @ cannot generate blocks outside the kernelspace");
+		code = Error::MemoryProtection;
+		return EINVAL;
+	}
+	
+	// Otherwise generate a trampoline with opcodes
+	mach_vm_address_t trampoline = createTrampoline(from, LongJump, opcodes, opnum);
+	if (!trampoline) return EINVAL;
+
+	// And redirect the original function to it
+	return routeFunction(from, trampoline) == 0 ? trampoline : EINVAL;
+}
+
 uint8_t KernelPatcher::tempExecutableMemory[TempExecutableMemorySize] __attribute__((section("__TEXT,__text")));
 
-mach_vm_address_t KernelPatcher::createTrampoline(mach_vm_address_t func, size_t min) {
-	if (!disasm.init()) {
-		SYSLOG("patcher @ failed to use disasm");
-		code = Error::DisasmFailure;
+mach_vm_address_t KernelPatcher::createTrampoline(mach_vm_address_t func, size_t min, const uint8_t *opcodes, size_t opnum) {
+	// Doing it earlier to workaround stack corruption due to a possible 10.12 bug.
+	// Otherwise in rare cases there will be random KPs with corrupted stack data.
+	if (kinfos[KernelID]->setKernelWriting(true) != KERN_SUCCESS) {
+		SYSLOG("patcher @ failed to set executable permissions");
+		code = Error::MemoryProtection;
 		return 0;
 	}
 	
 	// Relative destination offset
-	size_t off = disasm.instructionSize(func, min);
+	size_t off = Disassembler::quickInstructionSize(func, min);
 	
 	if (!off || off > PAGE_SIZE - LongJump) {
-		SYSLOG("patcher @ unsupported destination offset %zu", off);
+		kinfos[KernelID]->setKernelWriting(false);
+		SYSLOG("patcher @ unsupported destination offset %lu", off);
 		code = Error::DisasmFailure;
 		return 0;
 	}
 	
 	uint8_t *tempDataPtr = reinterpret_cast<uint8_t *>(tempExecutableMemory) + tempExecutableMemoryOff;
 	
-	tempExecutableMemoryOff += off + LongJump;
+	tempExecutableMemoryOff += off + LongJump + opnum;
 	
 	if (tempExecutableMemoryOff >= TempExecutableMemorySize) {
-		SYSLOG("patcher @ not enough executable memory requested %lld have %zu", tempExecutableMemoryOff+1, TempExecutableMemorySize);
+		kinfos[KernelID]->setKernelWriting(false);
+		SYSLOG("patcher @ not enough executable memory requested %lld have %lu", tempExecutableMemoryOff+1, TempExecutableMemorySize);
 		code = Error::DisasmFailure;
-	} else if (kinfos[KernelID]->setKernelWriting(true) == KERN_SUCCESS) {
+	} else {
+		// Copy the opcodes if any
+		if (opnum > 0)
+			memcpy(tempDataPtr, opcodes, opnum);
+		
 		// Copy the prologue, assuming it is PIC
-		memcpy(tempDataPtr, reinterpret_cast<void *>(func), off);
+		memcpy(tempDataPtr + opnum, reinterpret_cast<void *>(func), off);
 	
 		// Add a jump
-		routeFunction(reinterpret_cast<mach_vm_address_t>(tempDataPtr+off), func+off, false, false);
+		routeFunction(reinterpret_cast<mach_vm_address_t>(tempDataPtr+opnum+off), func+off, false, false);
 		
 		kinfos[KernelID]->setKernelWriting(false);
 		
@@ -360,15 +407,12 @@ mach_vm_address_t KernelPatcher::createTrampoline(mach_vm_address_t func, size_t
 		} else {
 			SYSLOG("patcher @ failed to route an inner trempoline");
 		}
-	} else {
-		SYSLOG("patcher @ failed to set executable permissions");
-		code = Error::MemoryProtection;
 	}
 	
 	return 0;
 }
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 void KernelPatcher::onKextSummariesUpdated() {
 	if (that) {
 		// macOS 10.12 generates an interrupt during this call but unlike 10.11 and below
@@ -393,7 +437,7 @@ void KernelPatcher::onKextSummariesUpdated() {
 
 		DBGLOG("patcher @ invoked at kext loading/unloading");
 		
-		if (that->loadedKextSummaries) {
+		if (that->activated && that->loadedKextSummaries) {
 			auto num = (*that->loadedKextSummaries)->numSummaries;
 			if (num > 0) {
 				if (that->waitingForAlreadyLoadedKexts) {
@@ -411,7 +455,8 @@ void KernelPatcher::onKextSummariesUpdated() {
 							that->khandlers[i]->size = last.size;
 							that->khandlers[i]->handler(that->khandlers[i]);
 							// Remove the item
-							that->khandlers.erase(i);
+							if (!that->khandlers[i]->reloadable)
+								that->khandlers.erase(i);
 							break;
 						}
 					}
@@ -428,7 +473,7 @@ void KernelPatcher::onKextSummariesUpdated() {
 }
 
 void KernelPatcher::processAlreadyLoadedKexts(OSKextLoadedKextSummary *summaries, size_t num) {
-	DBGLOG("patcher @ processing already loaded kexts by iterating over %zu summaries", num);
+	DBGLOG("patcher @ processing already loaded kexts by iterating over %lu summaries", num);
 	
 	for (size_t i = 0; i < num; i++) {
 		auto curr = summaries[i];
@@ -441,11 +486,12 @@ void KernelPatcher::processAlreadyLoadedKexts(OSKextLoadedKextSummary *summaries
 					handler->size = curr.size;
 					handler->handler(handler);
 					// Remove the item
-					khandlers.erase(j);
+					if (!that->khandlers[j]->reloadable)
+						that->khandlers.erase(j);
 					break;
 				}
 			}
 		}
 	}
 }
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */

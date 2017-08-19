@@ -10,9 +10,9 @@
 #include <Headers/kern_config.hpp>
 #include <PrivateHeaders/kern_config.hpp>
 #include <Headers/kern_mach.hpp>
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 #include <Headers/kern_compression.hpp>
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 #include <Headers/kern_file.hpp>
 #include <Headers/kern_util.hpp>
 
@@ -97,13 +97,13 @@ kern_return_t MachInfo::init(const char * const paths[], size_t num) {
 	// we must do this or the machine gets stuck on shutdown/reboot
 	vnode_put(vnode);
 
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 	// We do not need the whole file buffer anymore
 	if (file_buf) {
 		Buffer::deleter(file_buf);
 		file_buf = nullptr;
 	}
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 	Buffer::deleter(machHeader);
 	
 	return error;
@@ -136,6 +136,17 @@ mach_vm_address_t MachInfo::findKernelBase() {
 	return 0;
 }
 
+bool MachInfo::setInterrupts(bool enable) {
+	unsigned long flags;
+	
+	if (enable)
+		asm volatile("pushf; pop %0; cli" : "=r"(flags));
+	else
+		asm volatile("pushf; pop %0; sti" : "=r"(flags));
+	
+	return static_cast<bool>(flags & EFL_IF) != enable;
+}
+
 kern_return_t MachInfo::setKernelWriting(bool enable, bool sync) {
 	static bool syncState = false;
 	static bool interruptsDisabled = false;
@@ -151,9 +162,7 @@ kern_return_t MachInfo::setKernelWriting(bool enable, bool sync) {
 	
 	if (enable) {
 		// Disable interrupts
-		unsigned long flags;
-		asm volatile("pushf; pop %0; cli" : "=r"(flags));
-		interruptsDisabled = (flags & EFL_IF) == 0;
+		interruptsDisabled = !setInterrupts(false);
 	}
 	
 	if (setWPBit(!enable) != KERN_SUCCESS) {
@@ -164,7 +173,7 @@ kern_return_t MachInfo::setKernelWriting(bool enable, bool sync) {
 	
 	if (!enable && !interruptsDisabled) {
 		// Enable interrupts if they were on previously
-		asm volatile("sti; nop");
+		setInterrupts(true);
 	}
 	
 	return res;
@@ -234,7 +243,7 @@ kern_return_t MachInfo::readMachHeader(uint8_t *buffer, vnode_t vnode, vfs_conte
 				SYSLOG("mach @ failed to find a x86_64 mach");
 				return KERN_FAILURE;
 			}
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 			case CompressedMagic: { // comp
 				auto header = reinterpret_cast<CompressedHeader *>(buffer);
 				auto compressedBuf = Buffer::create<uint8_t>(_OSSwapInt32(header->compressed));
@@ -265,7 +274,7 @@ kern_return_t MachInfo::readMachHeader(uint8_t *buffer, vnode_t vnode, vfs_conte
 				Buffer::deleter(compressedBuf);
 				return KERN_FAILURE;
 			}
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 			default:
 				SYSLOG("mach @ read mach has unsupported %X magic", magic);
 				return KERN_FAILURE;
@@ -286,19 +295,19 @@ kern_return_t MachInfo::readLinkedit(vnode_t vnode, vfs_context_t ctxt) {
 		return KERN_FAILURE;
 	}
 
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 	if (!file_buf) {
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 		int error = FileIO::readFileData(linkedit_buf, fat_offset+linkedit_fileoff, linkedit_size, vnode, ctxt);
 		if (error) {
 			SYSLOG("mach @ linkedit read failed with %d error", error);
 			return KERN_FAILURE;
 		}
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 	} else {
 		memcpy(linkedit_buf, file_buf+linkedit_fileoff, linkedit_size);
 	}
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 
 	return KERN_SUCCESS;
 }
@@ -341,7 +350,7 @@ void MachInfo::findSectionBounds(void *ptr, vm_address_t &vmsegment, vm_address_
 						vmsection = sect->addr;
 						sectionptr = reinterpret_cast<void *>(sect->offset+reinterpret_cast<uintptr_t>(ptr));
 						size = static_cast<size_t>(sect->size);
-						DBGLOG("mach @ found section %lu size %zu in segment %lu\n", vmsection, vmsegment, size);
+						DBGLOG("mach @ found section %lu size %lu in segment %lu\n", vmsection, vmsegment, size);
 						return;
 					}
 					
@@ -360,7 +369,7 @@ void MachInfo::findSectionBounds(void *ptr, vm_address_t &vmsegment, vm_address_
 						vmsection = sect->addr;
 						sectionptr = reinterpret_cast<void *>(sect->offset+reinterpret_cast<uintptr_t>(ptr));
 						size = static_cast<size_t>(sect->size);
-						DBGLOG("mach @ found section %lu size %zu in segment %lu\n", vmsection, vmsegment, size);
+						DBGLOG("mach @ found section %lu size %lu in segment %lu\n", vmsection, vmsegment, size);
 						return;
 					}
 					
@@ -409,7 +418,14 @@ void MachInfo::processMachHeader(void *header) {
 }
 
 //FIXME: Guard pointer access by HeaderSize
-kern_return_t MachInfo::getRunningAddresses(mach_vm_address_t slide, size_t size) {
+kern_return_t MachInfo::getRunningAddresses(mach_vm_address_t slide, size_t size, bool force) {
+	if (force) {
+		kaslr_slide_set = false;
+		running_mh = nullptr;
+		running_text_addr = 0;
+		memory_size = 0;
+	}
+	
 	if (kaslr_slide_set) return KERN_SUCCESS;
 	
 	if (size > 0)
@@ -466,7 +482,7 @@ kern_return_t MachInfo::setRunningAddresses(mach_vm_address_t slide, size_t size
 void MachInfo::getRunningPosition(uint8_t * &header, size_t &size) {
 	header = reinterpret_cast<uint8_t *>(running_mh);
 	size = memory_size > 0 ? memory_size : HeaderSize;
-	DBGLOG("mach @ getRunningPosition %p of memory %zu size", header, size);
+	DBGLOG("mach @ getRunningPosition %p of memory %lu size", header, size);
 }
 
 //FIXME: Guard pointer access by HeaderSize

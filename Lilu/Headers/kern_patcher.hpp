@@ -16,10 +16,10 @@
 #include <mach/mach_types.h>
 
 namespace Patch { union All; void deleter(All *); }
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 struct OSKextLoadedKextSummaryHeader;
 struct OSKextLoadedKextSummary;
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 
 class KernelPatcher {
 public:
@@ -68,17 +68,18 @@ public:
 	 */
 	struct KextInfo;
 	
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 	struct KextInfo {
 		static constexpr size_t Unloaded {0};
 		const char *id;
 		const char **paths;
 		size_t pathNum;
 		bool loaded; // invoke for kext if it is already loaded
-		bool user[7];
+		bool reloadable; // allow the kext to unload and get patched again
+		bool user[6];
 		size_t loadIndex; // Updated after loading
 	};
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 
 	/**
 	 *  Loads and stores kinfo information locally
@@ -92,7 +93,7 @@ public:
 	 */
 	EXPORT size_t loadKinfo(const char *id, const char * const paths[], size_t num=1, bool isKernel=false);
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 	/**
 	 *  Loads and stores kinfo information locally
 	 *
@@ -101,7 +102,7 @@ public:
 	 *  @return loaded kinfo id
 	 */
 	EXPORT size_t loadKinfo(KextInfo *info);
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 
 	/**
 	 *  Kernel kinfo id
@@ -114,8 +115,9 @@ public:
 	 *  @param id    loaded kinfo id
 	 *  @param slide loaded slide
 	 *  @param size  loaded memory size
+	 *  @param force force recalculatiob
 	 */
-	EXPORT void updateRunningInfo(size_t id, mach_vm_address_t slide=0, size_t size=0);
+	EXPORT void updateRunningInfo(size_t id, mach_vm_address_t slide=0, size_t size=0, bool force=false);
 	
 	/**
 	 *  Any kernel
@@ -148,15 +150,20 @@ public:
 	EXPORT void setupKextListening();
 	
 	/**
+	 *  Activates monitoring functions if necessary
+	 */
+	void activate();
+	
+	/**
 	 *  Load handling structure
 	 */
 	class KextHandler {
 		using t_handler = void (*)(KextHandler *);
-		KextHandler(const char * const i, size_t idx, t_handler h, bool l) :
-			id(i), index(idx), handler(h), loaded(l) {}
+		KextHandler(const char * const i, size_t idx, t_handler h, bool l, bool r) :
+			id(i), index(idx), handler(h), loaded(l), reloadable(r) {}
 	public:
-		static KextHandler *create(const char * const i, size_t idx, t_handler h, bool l=false) {
-			return new KextHandler(i, idx, h, l);
+		static KextHandler *create(const char * const i, size_t idx, t_handler h, bool l=false, bool r=false) {
+			return new KextHandler(i, idx, h, l, r);
 		}
 		static void deleter(KextHandler *i) {
 			delete i;
@@ -169,15 +176,23 @@ public:
 		size_t size {0};
 		t_handler handler {nullptr};
 		bool loaded {false};
+		bool reloadable {false};
 	};
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 	/**
 	 *  Enqueue handler processing at kext loading
 	 *
 	 *  @param handler  handler to process
 	 */
 	EXPORT void waitOnKext(KextHandler *handler);
+	
+	/**
+	 *  Update kext handler features
+	 *
+	 *  @param info  loaded kext info with features
+	 */
+	void updateKextHandlerFeatures(KextInfo *info);
 
 	/**
 	 *  Arbitrary kext find/replace patch
@@ -196,7 +211,7 @@ public:
 	 *  @param patch patch to apply
 	 */
 	EXPORT void applyLookupPatch(const LookupPatch *patch);
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 
 	/**
 	 *  Route function to function
@@ -209,6 +224,19 @@ public:
 	 *  @return wrapper pointer or 0 on success
 	 */
 	EXPORT mach_vm_address_t routeFunction(mach_vm_address_t from, mach_vm_address_t to, bool buildWrapper=false, bool kernelRoute=true);
+	
+	/**
+	 *  Route block at assembly level
+	 *
+	 *  @param from         address to route
+	 *  @param opcodes      opcodes to insert
+	 *  @param opnum        number of opcodes
+	 *  @param buildWrapper create entrance wrapper
+	 *  @param kernelRoute  kernel change requiring memory protection changes and patch reverting at unload
+	 *
+	 *  @return wrapper pointer or 0 on success
+	 */
+	EXPORT mach_vm_address_t routeBlock(mach_vm_address_t from, const uint8_t *opcodes, size_t opnum, bool buildWrapper=false, bool kernelRoute=true);
 
 private:
 
@@ -228,16 +256,23 @@ private:
 	off_t tempExecutableMemoryOff {0};
 	
 	/**
+	 *  Patcher status
+	 */
+	bool activated {false};
+	
+	/**
 	 *  Created routed trampoline page
 	 *
-	 *  @param func original area
-	 *  @param min  minimal amount of bytes that will be overwritten
+	 *  @param func     original area
+	 *  @param min      minimal amount of bytes that will be overwritten
+	 *  @param opcodes  opcodes to insert before function
+	 *  @param opnum    number of opcodes
 	 *
 	 *  @return trampoline pointer or 0
 	 */
-	mach_vm_address_t createTrampoline(mach_vm_address_t func, size_t min);
+	mach_vm_address_t createTrampoline(mach_vm_address_t func, size_t min, const uint8_t *opcodes=nullptr, size_t opnum=0);
 
-#ifdef KEXTPATCH_SUPPORT
+#ifdef LILU_KEXTPATCH_SUPPORT
 	/**
 	 *  Called at kext loading and unloading if kext listening is enabled
 	 */
@@ -261,7 +296,7 @@ private:
 	 */
 	void processAlreadyLoadedKexts(OSKextLoadedKextSummary *summaries, size_t num);
 	
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 	
 	/**
 	 *  Local disassmebler instance, initialised on demand
@@ -278,7 +313,7 @@ private:
 	 */
 	evector<Patch::All *, Patch::deleter> kpatches;
 
-#ifdef KEXTPATCH_SUPPORT	
+#ifdef LILU_KEXTPATCH_SUPPORT	
 	/**
 	 *  Awaiting kext notificators
 	 */
@@ -289,7 +324,7 @@ private:
 	 */
 	bool waitingForAlreadyLoadedKexts {false};
 	
-#endif /* KEXTPATCH_SUPPORT */
+#endif /* LILU_KEXTPATCH_SUPPORT */
 	
 	/**
 	 *  Allocated pages
@@ -311,20 +346,20 @@ private:
 	/**
 	 *  Possible kernel paths
 	 */
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 	static constexpr size_t kernelPathsNum {6};
 #else
 	static constexpr size_t kernelPathsNum {4};
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 	const char *kernelPaths[kernelPathsNum] {
 		"/mach_kernel",
 		"/System/Library/Kernels/kernel",	//since 10.10
 		"/System/Library/Kernels/kernel.debug",
 		"/System/Library/Kernels/kernel.development",
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 		"/System/Library/Caches/com.apple.kext.caches/Startup/kernelcache",
 		"/System/Library/PrelinkedKernels/prelinkedkernel"
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 		
 	};
 };

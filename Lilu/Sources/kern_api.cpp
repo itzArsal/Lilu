@@ -14,12 +14,12 @@
 LiluAPI lilu;
 
 void LiluAPI::init() {
-	access = IOSimpleLockAlloc();
+	access = IOLockAlloc();
 }
 
 void LiluAPI::deinit() {
 	if (access) {
-		IOSimpleLockFree(access);
+		IOLockFree(access);
 		access = nullptr;
 	}
 }
@@ -31,15 +31,15 @@ LiluAPI::Error LiluAPI::requestAccess(size_t version, bool check) {
 	}
 	
 	if (check) {
-		if (!IOSimpleLockTryLock(access)) {
+		if (!IOLockTryLock(access)) {
 			return Error::LockError;
 		}
 	} else {
-		IOSimpleLockLock(access);
+		IOLockLock(access);
 	}
 	
 	if (apiRequestsOver) {
-		IOSimpleLockUnlock(access);
+		IOLockUnlock(access);
 		return Error::TooLate;
 	}
 	
@@ -47,13 +47,13 @@ LiluAPI::Error LiluAPI::requestAccess(size_t version, bool check) {
 }
 
 LiluAPI::Error LiluAPI::releaseAccess() {
-	IOSimpleLockUnlock(access);
+	IOLockUnlock(access);
 	return Error::NoError;
 }
 
 LiluAPI::Error LiluAPI::shouldLoad(const char *product, size_t version, const char **disableArg, size_t disableArgNum, const char **debugArg, size_t debugArgNum, const char **betaArg, size_t betaArgNum, KernelVersion min, KernelVersion max, bool &printDebug) {
 	
-	DBGLOG("api @ got load request from %s (%zu)", product, version);
+	DBGLOG("api @ got load request from %s (%lu)", product, version);
 	
 	char tmp[16];
 	printDebug = false;
@@ -74,10 +74,10 @@ LiluAPI::Error LiluAPI::shouldLoad(const char *product, size_t version, const ch
 		}
 		
 		if (!beta) {
-			SYSLOG("api @ automatically disabling %s (%zu) on an unsupported operating system", product, version);
+			SYSLOG("api @ automatically disabling %s (%lu) on an unsupported operating system", product, version);
 			return Error::IncompatibleOS;
 		} else {
-			SYSLOG("api @ force enabling %s (%zu) on an unsupported operating system due to beta flag", product, version);
+			SYSLOG("api @ force enabling %s (%lu) on an unsupported operating system due to beta flag", product, version);
 		}
 	}
 	
@@ -195,9 +195,9 @@ LiluAPI::Error LiluAPI::onProcLoad(UserPatcher::ProcInfo *infos, size_t num, Use
 
 void LiluAPI::processPatcherLoadCallbacks(KernelPatcher &patcher) {
 	// Block any new requests
-	IOSimpleLockLock(access);
+	IOLockLock(access);
 	apiRequestsOver = true;
-	IOSimpleLockUnlock(access);
+	IOLockUnlock(access);
 	
 	// Process the callbacks
 	for (size_t i = 0; i < patcherLoadedCallbacks.size(); i++) {
@@ -209,11 +209,22 @@ void LiluAPI::processPatcherLoadCallbacks(KernelPatcher &patcher) {
 	for (size_t i = 0; i < storedKexts.size(); i++) {
 		auto stored = storedKexts[i];
 		for (size_t j = 0; j < stored->second; j++) {
+			if (stored->first[j].pathNum == 0)
+				continue;
+			
 			patcher.loadKinfo(&stored->first[j]);
-			if (patcher.getError() != KernelPatcher::Error::NoError) {
-				if (patcher.getError() != KernelPatcher::Error::AlreadyDone)
-					SYSLOG("api @ failed to load %s kext file", stored->first[j].id);
+			auto error = patcher.getError();
+			if (error != KernelPatcher::Error::NoError) {
 				patcher.clearError();
+				if (error == KernelPatcher::Error::AlreadyDone) {
+					if (stored->first[j].loaded || stored->first[j].reloadable) {
+						DBGLOG("api @ updating new kext handler features");
+						patcher.updateKextHandlerFeatures(&stored->first[j]);
+					}
+				} else if (ADDPR(debugEnabled)) {
+					SYSLOG("api @ failed to load %s kext file", stored->first[j].id);
+				}
+				
 				// Depending on a system some kexts may actually not exist
 				continue;
 			}
@@ -229,10 +240,10 @@ void LiluAPI::processPatcherLoadCallbacks(KernelPatcher &patcher) {
 			auto handler = KernelPatcher::KextHandler::create(stored->first[j].id, stored->first[j].loadIndex,
 			[](KernelPatcher::KextHandler *h) {
 				if (h)
-					lilu.processKextLoadCallbacks(*static_cast<KernelPatcher *>(h->self), h->index, h->address, h->size);
+					lilu.processKextLoadCallbacks(*static_cast<KernelPatcher *>(h->self), h->index, h->address, h->size, h->reloadable);
 				else
 					SYSLOG("api @ kext notification callback arrived at nowhere");
-			}, stored->first[j].loaded);
+			}, stored->first[j].loaded, stored->first[j].reloadable);
 			
 			if (!handler) {
 				SYSLOG("api @ failed to allocate KextHandler for %s", stored->first[j].id);
@@ -253,9 +264,9 @@ void LiluAPI::processPatcherLoadCallbacks(KernelPatcher &patcher) {
 	}
 }
 
-void LiluAPI::processKextLoadCallbacks(KernelPatcher &patcher, size_t id, mach_vm_address_t slide, size_t size) {
+void LiluAPI::processKextLoadCallbacks(KernelPatcher &patcher, size_t id, mach_vm_address_t slide, size_t size, bool reloadable) {
 	// Update running info
-	patcher.updateRunningInfo(id, slide, size);
+	patcher.updateRunningInfo(id, slide, size, reloadable);
 	
 	// Process the callbacks
 	for (size_t i = 0; i < kextLoadedCallbacks.size(); i++) {
@@ -287,3 +298,7 @@ void LiluAPI::processBinaryLoadCallbacks(UserPatcher &patcher, vm_map_t map, con
 	}
 }
 
+void LiluAPI::activate(KernelPatcher &kpatcher, UserPatcher &upatcher) {
+	kpatcher.activate();
+	upatcher.activate();
+}

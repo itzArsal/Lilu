@@ -13,7 +13,6 @@
 #include <mach/vm_map.h>
 
 bool ADDPR(debugEnabled) = false;
-extern vm_map_t kernel_map;
 
 const char *strstr(const char *stack, const char *needle, size_t len) {
 	if (!len && !(len = strlen(needle)))
@@ -52,6 +51,10 @@ extern "C" void *kern_os_calloc(size_t num, size_t size) {
 	return kern_os_malloc(num * size); // malloc bzeroes the buffer
 }
 
+extern "C" void kern_os_cfree(void *addr) {
+	// kern_os_free does not check its argument for nullptr
+	if (addr) kern_os_free(addr);
+}
 
 bool Page::alloc() {
 	if (p && vm_deallocate(kernel_map, reinterpret_cast<vm_address_t>(p), PAGE_SIZE) != KERN_SUCCESS)

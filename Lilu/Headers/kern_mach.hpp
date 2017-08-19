@@ -23,9 +23,9 @@ class MachInfo {
 	mach_vm_address_t running_text_addr {0}; // the address of running __TEXT segment
 	mach_vm_address_t disk_text_addr {0};    // the same address at from a file
 	mach_vm_address_t kaslr_slide {0};       // the kernel aslr slide, computed as the difference between above's addresses
-#ifdef COMPRESSION_SUPPORT
+#ifdef LILU_COMPRESSION_SUPPORT
 	uint8_t *file_buf {nullptr};             // read file data if decompression was used
-#endif /* COMPRESSION_SUPPORT */
+#endif /* LILU_COMPRESSION_SUPPORT */
 	uint8_t *linkedit_buf {nullptr};         // pointer to __LINKEDIT buffer containing symbols to solve
 	uint64_t linkedit_fileoff {0};           // __LINKEDIT file offset so we can read
 	uint64_t linkedit_size {0};
@@ -167,10 +167,11 @@ public:
 	 *
 	 *  @param slide load slide if calculating for kexts
 	 *  @param size  memory size
+	 *  @param force force address recalculation
 	 *
 	 *  @return KERN_SUCCESS on success
 	 */
-	EXPORT kern_return_t getRunningAddresses(mach_vm_address_t slide=0, size_t size=0);
+	EXPORT kern_return_t getRunningAddresses(mach_vm_address_t slide=0, size_t size=0, bool force=false);
 	
 	/**
 	 *  Set the mach header address
@@ -207,6 +208,16 @@ public:
 	 */
 	EXPORT mach_vm_address_t findKernelBase();
 
+	/**
+	 *  enable/disable interrupt handling
+	 *  this is similar to ml_set_interrupts_enabled except the return value
+	 *
+	 *  @param enable the desired value
+	 *
+	 *  @return true if changed the value and false if it is unchanged
+	 */
+	EXPORT static bool setInterrupts(bool enable);
+	
 	/**
 	 *  enable/disable kernel memory write protection
 	 *

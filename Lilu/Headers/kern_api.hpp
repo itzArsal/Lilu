@@ -150,12 +150,13 @@ public:
 	/**
 	 *  Processes all the registered kext load callbacks
 	 *
-	 *  @param patcher kernel patcher instance
-	 *  @param id      loaded kinfo id
-	 *  @param slide   loaded slide
-	 *  @param size    loaded memory size
+	 *  @param patcher    kernel patcher instance
+	 *  @param id         loaded kinfo id
+	 *  @param slide      loaded slide
+	 *  @param size       loaded memory size
+	 *  @param reloadable kinfo could be unloaded
 	 */
-	void processKextLoadCallbacks(KernelPatcher &patcher, size_t id, mach_vm_address_t slide, size_t size);
+	void processKextLoadCallbacks(KernelPatcher &patcher, size_t id, mach_vm_address_t slide, size_t size, bool reloadable);
 	
 	/**
 	 *  Processes all the registered user patcher load callbacks
@@ -174,12 +175,20 @@ public:
 	 */
 	void processBinaryLoadCallbacks(UserPatcher &patcher, vm_map_t map, const char *path, size_t len);
 	
+	/**
+	 *  Activates patchers
+	 *
+	 *  @param kpatcher  kernel patcher instance
+	 *  @param upatcher  user patcher instance
+	 */
+	void activate(KernelPatcher &kpatcher, UserPatcher &upatcher);
+	
 private:
 	
 	/**
 	 *  Api lock
 	 */
-	IOSimpleLock *access {nullptr};
+	IOLock *access {nullptr};
 	
 	/**
 	 *  No longer accept any requests
